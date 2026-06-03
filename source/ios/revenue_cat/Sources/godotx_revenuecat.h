@@ -26,6 +26,7 @@ public:
     void check_entitlement(String entitlement_id);
     void present_paywall(String offering_id);
     void restore_purchases();
+    void set_attributes(Dictionary attributes);
 
     GodotxRevenueCat();
     ~GodotxRevenueCat();

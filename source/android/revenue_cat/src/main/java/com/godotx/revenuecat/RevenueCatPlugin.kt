@@ -17,6 +17,7 @@ import com.revenuecat.purchases.interfaces.LogInCallback
 import com.revenuecat.purchases.interfaces.PurchaseCallback
 import com.revenuecat.purchases.interfaces.ReceiveCustomerInfoCallback
 import com.revenuecat.purchases.interfaces.ReceiveOfferingsCallback
+import com.revenuecat.purchases.interfaces.UpdatedCustomerInfoListener
 import com.revenuecat.purchases.models.StoreProduct
 import com.revenuecat.purchases.models.StoreTransaction
 import com.revenuecat.purchases.restorePurchasesWith
@@ -25,7 +26,6 @@ import org.godotengine.godot.Godot
 import org.godotengine.godot.plugin.GodotPlugin
 import org.godotengine.godot.plugin.SignalInfo
 import org.godotengine.godot.plugin.UsedByGodot
-import java.util.ArrayList
 
 class RevenueCatPlugin(godot: Godot) : GodotPlugin(godot) {
 
@@ -69,6 +69,19 @@ class RevenueCatPlugin(godot: Godot) : GodotPlugin(godot) {
         for ((k, v) in pairs) {
             d[k] = v ?: ""
         }
+        return d
+    }
+
+    // Builds the customer-info payload shared by customer_info / customer_info_changed.
+    // active_ids carries the identifiers of every active entitlement so GDScript can gate
+    // on a specific entitlement (Stepland Plus) instead of a bare count.
+    private fun customerInfoDict(info: CustomerInfo): Dictionary {
+        val d = Dictionary()
+        d["active_entitlements"] = info.entitlements.active.size
+        // String[] (not ArrayList) so Godot's JNI converts it to a PackedStringArray.
+        // jni_utils.cpp _jobject_to_variant has a "[Ljava.lang.String;" case but none for
+        // java.util.ArrayList, which would otherwise reach GDScript as an opaque JavaObject.
+        d["active_ids"] = info.entitlements.active.keys.toTypedArray()
         return d
     }
 
@@ -127,7 +140,26 @@ class RevenueCatPlugin(godot: Godot) : GodotPlugin(godot) {
 
         Purchases.configure(builder.build())
 
+        // Live entitlement updates (renewals, expiry, restore, cross-device sync). Without
+        // this listener the customer_info_changed signal never fires on Android; Model B
+        // relies on it to keep the entitlement source of truth current.
+        Purchases.sharedInstance.updatedCustomerInfoListener =
+            UpdatedCustomerInfoListener { customerInfo ->
+                currentCustomerInfo = customerInfo
+                emitOnMain("customer_info_changed", customerInfoDict(customerInfo))
+            }
+
         get_customer_info()
+    }
+
+    @UsedByGodot
+    fun set_attributes(attributes: Dictionary) {
+        val map = HashMap<String, String>()
+        for (key in attributes.keys) {
+            val value = attributes[key]
+            map[key.toString()] = value?.toString() ?: ""
+        }
+        Purchases.sharedInstance.setAttributes(map)
     }
 
     @UsedByGodot
@@ -141,10 +173,7 @@ class RevenueCatPlugin(godot: Godot) : GodotPlugin(godot) {
 
                 override fun onReceived(customerInfo: CustomerInfo) {
                     currentCustomerInfo = customerInfo
-                    emitOnMain(
-                        "customer_info",
-                        dictOf("active_entitlements" to customerInfo.entitlements.active.size)
-                    )
+                    emitOnMain("customer_info", customerInfoDict(customerInfo))
                 }
             }
         )
@@ -270,14 +299,20 @@ class RevenueCatPlugin(godot: Godot) : GodotPlugin(godot) {
 
             onError = { error ->
                 val result = Dictionary()
-                result["products"] = ArrayList<Dictionary>()
+                // Empty Object[] (not ArrayList) — see the onGetStoreProducts note below.
+                result["products"] = arrayOfNulls<Any>(0)
                 result["error"] = error.message ?: ""
                 emitOnMain("products", result)
             },
 
             onGetStoreProducts = { products ->
-                val list = ArrayList<Dictionary>()
-
+                // Emit as Object[] of Dictionary. Godot's JNI deep-converts an Object[]
+                // element by element (jni_utils.cpp _jobject_to_variant: "[Ljava.lang.Object;"
+                // -> Array, then each godot.Dictionary -> Godot Dictionary). A java.util.ArrayList
+                // has no JNI case, so it would reach GDScript as an opaque JavaObject whose
+                // .get(i) returns null and the price never loads.
+                val arr = arrayOfNulls<Any>(products.size)
+                var i = 0
                 for (p in products) {
                     val d = Dictionary()
                     d["id"] = p.id
@@ -285,11 +320,11 @@ class RevenueCatPlugin(godot: Godot) : GodotPlugin(godot) {
                     d["description"] = p.description
                     d["price"] = p.price.formatted
                     d["amount"] = p.price.amountMicros / 1_000_000.0
-                    list.add(d)
+                    arr[i++] = d
                 }
 
                 val result = Dictionary()
-                result["products"] = list
+                result["products"] = arr
                 result["error"] = ""
                 emitOnMain("products", result)
             }
