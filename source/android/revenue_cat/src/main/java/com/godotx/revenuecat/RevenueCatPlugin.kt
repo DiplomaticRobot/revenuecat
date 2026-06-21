@@ -299,18 +299,12 @@ class RevenueCatPlugin(godot: Godot) : GodotPlugin(godot) {
 
             onError = { error ->
                 val result = Dictionary()
-                // Empty Object[] (not ArrayList) — see the onGetStoreProducts note below.
-                result["products"] = arrayOfNulls<Any>(0)
+                result["products"] = emptyArray<Any>()
                 result["error"] = error.message ?: ""
                 emitOnMain("products", result)
             },
 
             onGetStoreProducts = { products ->
-                // Emit as Object[] of Dictionary. Godot's JNI deep-converts an Object[]
-                // element by element (jni_utils.cpp _jobject_to_variant: "[Ljava.lang.Object;"
-                // -> Array, then each godot.Dictionary -> Godot Dictionary). A java.util.ArrayList
-                // has no JNI case, so it would reach GDScript as an opaque JavaObject whose
-                // .get(i) returns null and the price never loads.
                 val arr = arrayOfNulls<Any>(products.size)
                 var i = 0
                 for (p in products) {
